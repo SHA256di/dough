@@ -1,98 +1,289 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Button,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY as string | undefined;
 
-export default function HomeScreen() {
+async function sendImageToClaude(base64Image: string, mediaType: string): Promise<string> {
+  if (!ANTHROPIC_API_KEY) {
+    throw new Error('Missing EXPO_PUBLIC_ANTHROPIC_API_KEY');
+  }
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-opus-4-6',
+      max_tokens: 512,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text: 'identify all the baked goods you can see and estimate the quantity of each item',
+            },
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: mediaType,
+                data: base64Image,
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`Anthropic API error (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+
+  const firstTextBlock =
+    Array.isArray(data.content) && data.content.find((block: any) => block.type === 'text');
+
+  if (firstTextBlock && typeof firstTextBlock.text === 'string') {
+    return firstTextBlock.text;
+  }
+
+  return JSON.stringify(data, null, 2);
+}
+
+export default function DoughVisionScreen() {
+  const [loading, setLoading] = useState(false);
+  const [responseText, setResponseText] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleTakePhoto = async () => {
+    try {
+      setError(null);
+      setResponseText(null);
+
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission required', 'Camera permission is needed to take photos.');
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        base64: true,
+        quality: 0.8,
+      });
+
+      if (result.canceled || !result.assets || !result.assets[0].base64) {
+        return;
+      }
+
+      const asset = result.assets[0];
+
+      const manipulated = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [],
+        {
+          compress: 0.8,
+          format: ImageManipulator.SaveFormat.JPEG,
+          base64: true,
+        },
+      );
+
+      if (!manipulated.base64) {
+        throw new Error('Failed to convert image to JPEG base64');
+      }
+
+      const base64Image = manipulated.base64;
+      const mediaType = 'image/jpeg';
+
+      setLoading(true);
+      const text = await sendImageToClaude(base64Image, mediaType);
+      setResponseText(text);
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message ?? 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handlePickImage = async () => {
+    try {
+      setError(null);
+      setResponseText(null);
+
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission required', 'Photo library permission is needed to pick images.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: 'images',
+        base64: true,
+        quality: 0.8,
+      });
+
+      if (result.canceled || !result.assets || !result.assets[0].base64) {
+        return;
+      }
+
+      const asset = result.assets[0];
+
+      const manipulated = await ImageManipulator.manipulateAsync(
+        asset.uri,
+        [],
+        {
+          compress: 0.8,
+          format: ImageManipulator.SaveFormat.JPEG,
+          base64: true,
+        },
+      );
+
+      if (!manipulated.base64) {
+        throw new Error('Failed to convert image to JPEG base64');
+      }
+
+      const base64Image = manipulated.base64;
+      const mediaType = 'image/jpeg';
+
+      setLoading(true);
+      const text = await sendImageToClaude(base64Image, mediaType);
+      setResponseText(text);
+    } catch (e: any) {
+      console.error(e);
+      setError(e.message ?? 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <View style={styles.container}>
+      <Text style={styles.title}>Dough – Vision Spike</Text>
+      <Text style={styles.subtitle}>
+        Take a photo or pick one from your library. Claude will identify baked goods and estimate
+        quantities.
+      </Text>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+      <View style={styles.buttonRow}>
+        <View style={styles.button}>
+          <Button title="Take Photo" onPress={handleTakePhoto} />
+        </View>
+        <View style={styles.button}>
+          <Button title="Pick from Library" onPress={handlePickImage} />
+        </View>
+      </View>
+
+      {loading && (
+        <View style={styles.status}>
+          <ActivityIndicator />
+          <Text style={styles.statusText}>Analyzing image with Claude...</Text>
+        </View>
+      )}
+
+      {error && (
+        <View style={styles.errorBox}>
+          <Text style={styles.errorTitle}>Error</Text>
+          <ScrollView>
+            <Text style={styles.errorText}>{error}</Text>
+          </ScrollView>
+        </View>
+      )}
+
+      {responseText && (
+        <View style={styles.responseBox}>
+          <Text style={styles.responseTitle}>Claude response</Text>
+          <ScrollView>
+            <Text style={styles.responseText}>{responseText}</Text>
+          </ScrollView>
+        </View>
+      )}
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  container: {
+    flex: 1,
+    padding: 24,
+    paddingTop: 64,
+    backgroundColor: '#fff',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#555',
+    marginBottom: 24,
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 24,
+  },
+  button: {
+    flex: 1,
+  },
+  status: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    marginBottom: 16,
   },
-  stepContainer: {
-    gap: 8,
+  statusText: {
+    fontSize: 14,
+    color: '#333',
+  },
+  errorBox: {
+    maxHeight: 160,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#f00',
+    padding: 12,
+    marginBottom: 16,
+    backgroundColor: '#ffe5e5',
+  },
+  errorTitle: {
+    fontWeight: '700',
+    marginBottom: 4,
+    color: '#b00000',
+  },
+  errorText: {
+    color: '#b00000',
+  },
+  responseBox: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+    padding: 12,
+    backgroundColor: '#fafafa',
+  },
+  responseTitle: {
+    fontWeight: '700',
     marginBottom: 8,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  responseText: {
+    fontSize: 14,
+    color: '#222',
   },
 });
