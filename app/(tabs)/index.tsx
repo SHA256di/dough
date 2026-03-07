@@ -1,3 +1,6 @@
+import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
+import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
@@ -8,8 +11,6 @@ import {
   Text,
   View,
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
-import * as ImageManipulator from 'expo-image-manipulator';
 
 const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY as string | undefined;
 
@@ -27,14 +28,33 @@ async function sendImageToClaude(base64Image: string, mediaType: string): Promis
     },
     body: JSON.stringify({
       model: 'claude-opus-4-6',
-      max_tokens: 512,
+      max_tokens: 2048,
       messages: [
         {
           role: 'user',
           content: [
             {
               type: 'text',
-              text: 'identify all the baked goods you can see and estimate the quantity of each item',
+              text: `You are an expert bakery waste analyst. Analyze this photo of unsold bakery items at the end of the day and return ONLY a valid JSON object with no explanation, no markdown, no extra text. Use this exact structure:
+
+{
+  "items": [
+    {
+      "name": "Croissant",
+      "quantity": 6,
+      "unit_price": 3.50,
+      "cost_to_make": 1.20,
+      "total_revenue_lost": 21.00
+    }
+  ],
+  "summary": {
+    "total_items": 12,
+    "total_revenue_lost": 58.40,
+    "insight": "Brief one sentence observation about today's waste."
+  }
+}
+
+Be as accurate as possible with quantities by counting carefully. Use typical bakery retail prices for your unit_price estimates.`,
             },
             {
               type: 'image',
@@ -67,7 +87,26 @@ async function sendImageToClaude(base64Image: string, mediaType: string): Promis
   return JSON.stringify(data, null, 2);
 }
 
+function extractJson(text: string): string {
+  let cleaned = text.trim();
+  // Strip markdown code blocks (```json ... ``` or ``` ... ```)
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/m, '');
+  return cleaned.trim();
+}
+
+function isValidAnalysis(obj: unknown): obj is { items: unknown[]; summary: { total_revenue_lost?: number; insight?: string } } {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    'items' in obj &&
+    Array.isArray((obj as any).items) &&
+    'summary' in obj &&
+    typeof (obj as any).summary === 'object'
+  );
+}
+
 export default function DoughVisionScreen() {
+  const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [responseText, setResponseText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -113,6 +152,16 @@ export default function DoughVisionScreen() {
 
       setLoading(true);
       const text = await sendImageToClaude(base64Image, mediaType);
+      try {
+        const jsonStr = extractJson(text);
+        const parsed = JSON.parse(jsonStr);
+        if (isValidAnalysis(parsed)) {
+          router.push({ pathname: '/results', params: { analysis: JSON.stringify(parsed) } });
+          return;
+        }
+      } catch (e) {
+        console.log('[Dough] Parse failed:', typeof text, text.slice(0, 200), e);
+      }
       setResponseText(text);
     } catch (e: any) {
       console.error(e);
@@ -164,6 +213,16 @@ export default function DoughVisionScreen() {
 
       setLoading(true);
       const text = await sendImageToClaude(base64Image, mediaType);
+      try {
+        const jsonStr = extractJson(text);
+        const parsed = JSON.parse(jsonStr);
+        if (isValidAnalysis(parsed)) {
+          router.push({ pathname: '/results', params: { analysis: JSON.stringify(parsed) } });
+          return;
+        }
+      } catch (e) {
+        console.log('[Dough] Parse failed:', typeof text, text.slice(0, 200), e);
+      }
       setResponseText(text);
     } catch (e: any) {
       console.error(e);
