@@ -1,6 +1,14 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useState } from 'react';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { supabase } from '@/lib/supabase';
 
 type BakeryItem = {
   name: string;
@@ -31,6 +39,10 @@ export default function ResultsScreen() {
   const { analysis } = useLocalSearchParams<{ analysis: string }>();
   const router = useRouter();
 
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   if (!analysis) {
     return (
       <View style={styles.container}>
@@ -51,6 +63,33 @@ export default function ResultsScreen() {
   }
 
   const { items, summary } = result;
+
+  const handleSave = async () => {
+    try {
+      setSaving(true);
+      setSaveError(null);
+
+      const { error } = await supabase.from('scans').insert({
+        total_items: summary.total_items,
+        total_revenue_lost: summary.total_revenue_lost,
+        insight: summary.insight ?? null,
+        items: items,
+        photo_url: null,
+      });
+
+      if (error) throw error;
+
+      setSaved(true);
+    } catch (e: any) {
+      setSaveError(e.message ?? 'Failed to save scan');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRescan = () => {
+    router.replace('/(tabs)');
+  };
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -76,9 +115,29 @@ export default function ResultsScreen() {
         </View>
       ) : null}
 
-      <Text style={styles.backHint} onPress={() => router.back()}>
-        ← Back
-      </Text>
+      {saveError ? (
+        <Text style={styles.saveError}>{saveError}</Text>
+      ) : null}
+
+      {saved ? (
+        <Text style={styles.savedText}>Scan saved ✓</Text>
+      ) : (
+        <TouchableOpacity
+          style={[styles.button, styles.buttonPrimary, saving && styles.buttonDisabled]}
+          onPress={handleSave}
+          disabled={saving}
+        >
+          {saving ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonTextPrimary}>Save to History</Text>
+          )}
+        </TouchableOpacity>
+      )}
+
+      <TouchableOpacity style={[styles.button, styles.buttonSecondary]} onPress={handleRescan}>
+        <Text style={styles.buttonTextSecondary}>Rescan</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -142,9 +201,43 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: '#333',
   },
-  backHint: {
+  button: {
+    borderRadius: 8,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  buttonPrimary: {
+    backgroundColor: '#111',
+  },
+  buttonSecondary: {
+    backgroundColor: '#f0f0f0',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  buttonTextPrimary: {
+    color: '#fff',
     fontSize: 16,
-    color: '#0066cc',
+    fontWeight: '600',
+  },
+  buttonTextSecondary: {
+    color: '#333',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  savedText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2a7a2a',
+    textAlign: 'center',
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  saveError: {
+    fontSize: 14,
+    color: '#c00',
+    marginBottom: 8,
   },
   errorText: {
     fontSize: 16,
