@@ -1,112 +1,274 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { supabase } from '@/lib/supabase';
+import { useFocusEffect } from 'expo-router';
+import React, { useCallback, useState } from 'react';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 
-import { Collapsible } from '@/components/ui/collapsible';
-import { ExternalLink } from '@/components/external-link';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Fonts } from '@/constants/theme';
+type BakeryItem = {
+  name: string;
+  quantity: number;
+  unit_price: number;
+  cost_to_make: number;
+  total_revenue_lost: number;
+};
 
-export default function TabTwoScreen() {
+type Scan = {
+  id: string;
+  created_at: string;
+  total_items: number;
+  total_revenue_lost: number;
+  insight: string | null;
+  items: BakeryItem[];
+  photo_url: string | null;
+};
+
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+export default function HistoryScreen() {
+  const [scans, setScans] = useState<Scan[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  const fetchScans = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      const { data, error: sbError } = await supabase
+        .from('scans')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (sbError) throw sbError;
+
+      setScans(data as Scan[]);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to load scans');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchScans();
+    }, [fetchScans])
+  );
+
+  const toggleExpand = (id: string) => {
+    setExpandedId(prev => (prev === id ? null : id));
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" />
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity onPress={fetchScans} style={styles.retryButton}>
+          <Text style={styles.retryText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (scans.length === 0) {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.emptyText}>
+          No scans yet — take your first photo at closing time.
+        </Text>
+      </View>
+    );
+  }
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText
-          type="title"
-          style={{
-            fontFamily: Fonts.rounded,
-          }}>
-          Explore
-        </ThemedText>
-      </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image
-          source={require('@/assets/images/react-logo.png')}
-          style={{ width: 100, height: 100, alignSelf: 'center' }}
-        />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful{' '}
-          <ThemedText type="defaultSemiBold" style={{ fontFamily: Fonts.mono }}>
-            react-native-reanimated
-          </ThemedText>{' '}
-          library to create a waving hand animation.
-        </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Text style={styles.heading}>History</Text>
+      {scans.map(scan => {
+        const isExpanded = expandedId === scan.id;
+        return (
+          <TouchableOpacity
+            key={scan.id}
+            style={styles.card}
+            onPress={() => toggleExpand(scan.id)}
+            activeOpacity={0.75}
+          >
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardDate}>{formatDate(scan.created_at)}</Text>
+              <Text style={styles.cardRevenue}>{formatCurrency(scan.total_revenue_lost)}</Text>
+            </View>
+            <Text style={styles.cardMeta}>{scan.total_items} items wasted</Text>
+            {scan.insight ? (
+              <Text style={styles.cardInsight} numberOfLines={isExpanded ? undefined : 2}>
+                {scan.insight}
+              </Text>
+            ) : null}
+
+            {isExpanded && Array.isArray(scan.items) && scan.items.length > 0 && (
+              <View style={styles.itemList}>
+                <Text style={styles.itemListTitle}>Breakdown</Text>
+                {scan.items.map((item, i) => (
+                  <View key={i} style={styles.itemRow}>
+                    <Text style={styles.itemName}>{item.name}</Text>
+                    <Text style={styles.itemMeta}>
+                      {item.quantity} × {formatCurrency(item.unit_price)} ={' '}
+                      {formatCurrency(item.total_revenue_lost)}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            <Text style={styles.expandHint}>{isExpanded ? 'Collapse ▲' : 'Show breakdown ▼'}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
+  container: {
+    flex: 1,
+    backgroundColor: '#fff',
   },
-  titleContainer: {
+  content: {
+    padding: 24,
+    paddingTop: 64,
+    paddingBottom: 48,
+  },
+  heading: {
+    fontSize: 28,
+    fontWeight: '700',
+    marginBottom: 24,
+  },
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+    backgroundColor: '#fff',
+  },
+  emptyText: {
+    fontSize: 16,
+    color: '#555',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  errorText: {
+    fontSize: 15,
+    color: '#c00',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  retryButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 24,
+    backgroundColor: '#111',
+    borderRadius: 8,
+  },
+  retryText: {
+    color: '#fff',
+    fontWeight: '600',
+  },
+  card: {
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    borderRadius: 10,
+    padding: 16,
+    marginBottom: 16,
+    backgroundColor: '#fafafa',
+  },
+  cardHeader: {
     flexDirection: 'row',
-    gap: 8,
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 4,
+  },
+  cardDate: {
+    fontSize: 13,
+    color: '#666',
+    flex: 1,
+    marginRight: 8,
+  },
+  cardRevenue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#c00',
+  },
+  cardMeta: {
+    fontSize: 13,
+    color: '#888',
+    marginBottom: 8,
+  },
+  cardInsight: {
+    fontSize: 14,
+    color: '#444',
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  itemList: {
+    marginTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#eee',
+    paddingTop: 12,
+  },
+  itemListTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 8,
+  },
+  itemRow: {
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  itemName: {
+    fontSize: 15,
+    fontWeight: '500',
+    marginBottom: 2,
+  },
+  itemMeta: {
+    fontSize: 13,
+    color: '#666',
+  },
+  expandHint: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 10,
+    textAlign: 'right',
   },
 });
