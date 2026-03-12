@@ -1,348 +1,319 @@
-import * as ImageManipulator from 'expo-image-manipulator';
-import * as ImagePicker from 'expo-image-picker';
-import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import { supabase } from '@/lib/supabase';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Button,
   ScrollView,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 
-const ANTHROPIC_API_KEY = process.env.EXPO_PUBLIC_ANTHROPIC_API_KEY as string | undefined;
+type Scan = {
+  id: string;
+  created_at: string;
+  total_items: number;
+  total_revenue_lost: number;
+  insight: string | null;
+  items: unknown[];
+};
 
-async function sendImageToClaude(base64Image: string, mediaType: string): Promise<string> {
-  if (!ANTHROPIC_API_KEY) {
-    throw new Error('Missing EXPO_PUBLIC_ANTHROPIC_API_KEY');
-  }
-
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: 'claude-opus-4-6',
-      max_tokens: 2048,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `You are an expert bakery waste analyst. Analyze this photo of unsold bakery items at the end of the day and return ONLY a valid JSON object with no explanation, no markdown, no extra text. Use this exact structure:
-
-{
-  "items": [
-    {
-      "name": "Croissant",
-      "quantity": 6,
-      "unit_price": 3.50,
-      "cost_to_make": 1.20,
-      "total_revenue_lost": 21.00
-    }
-  ],
-  "summary": {
-    "total_items": 12,
-    "total_revenue_lost": 58.40,
-    "insight": "Brief one sentence observation about today's waste."
-  }
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 12) return 'Good morning';
+  if (hour >= 12 && hour < 17) return 'Good afternoon';
+  return 'Good evening';
 }
 
-Be as accurate as possible with quantities by counting carefully. Use typical bakery retail prices for your unit_price estimates.`,
-            },
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: mediaType,
-                data: base64Image,
-              },
-            },
-          ],
-        },
-      ],
-    }),
+function formatCurrency(value: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
   });
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => '');
-    throw new Error(`Anthropic API error (${response.status}): ${errorText}`);
-  }
-
-  const data = await response.json();
-
-  const firstTextBlock =
-    Array.isArray(data.content) && data.content.find((block: any) => block.type === 'text');
-
-  if (firstTextBlock && typeof firstTextBlock.text === 'string') {
-    return firstTextBlock.text;
-  }
-
-  return JSON.stringify(data, null, 2);
 }
 
-function extractJson(text: string): string {
-  let cleaned = text.trim();
-  // Strip markdown code blocks (```json ... ``` or ``` ... ```)
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/m, '');
-  return cleaned.trim();
-}
-
-function isValidAnalysis(obj: unknown): obj is { items: unknown[]; summary: { total_revenue_lost?: number; insight?: string } } {
+function isSameDay(a: Date, b: Date): boolean {
   return (
-    typeof obj === 'object' &&
-    obj !== null &&
-    'items' in obj &&
-    Array.isArray((obj as any).items) &&
-    'summary' in obj &&
-    typeof (obj as any).summary === 'object'
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
   );
 }
 
-export default function DoughVisionScreen() {
+function getLast7Days(): Date[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - i));
+    return d;
+  });
+}
+
+const DAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+export default function HomeScreen() {
   const router = useRouter();
-  const [loading, setLoading] = useState(false);
-  const [responseText, setResponseText] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
-  const handleTakePhoto = async () => {
+  const [loading, setLoading] = useState(true);
+  const [weeklyRevenue, setWeeklyRevenue] = useState(0);
+  const [scanDates, setScanDates] = useState<Date[]>([]);
+  const [lastScan, setLastScan] = useState<Scan | null>(null);
+
+  const fetchData = useCallback(async () => {
     try {
-      setError(null);
-      setResponseText(null);
-
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission required', 'Camera permission is needed to take photos.');
-        return;
-      }
-
-      const result = await ImagePicker.launchCameraAsync({
-        base64: true,
-        quality: 0.8,
-      });
-
-      if (result.canceled || !result.assets || !result.assets[0].base64) {
-        return;
-      }
-
-      const asset = result.assets[0];
-
-      const manipulated = await ImageManipulator.manipulateAsync(
-        asset.uri,
-        [],
-        {
-          compress: 0.8,
-          format: ImageManipulator.SaveFormat.JPEG,
-          base64: true,
-        },
-      );
-
-      if (!manipulated.base64) {
-        throw new Error('Failed to convert image to JPEG base64');
-      }
-
-      const base64Image = manipulated.base64;
-      const mediaType = 'image/jpeg';
-
       setLoading(true);
-      const text = await sendImageToClaude(base64Image, mediaType);
-      try {
-        const jsonStr = extractJson(text);
-        const parsed = JSON.parse(jsonStr);
-        if (isValidAnalysis(parsed)) {
-          router.push({ pathname: '/results', params: { analysis: JSON.stringify(parsed) } });
-          return;
-        }
-      } catch (e) {
-        console.log('[Dough] Parse failed:', typeof text, text.slice(0, 200), e);
+
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+      const [weeklyRes, lastScanRes] = await Promise.all([
+        supabase
+          .from('scans')
+          .select('created_at, total_revenue_lost')
+          .gte('created_at', sevenDaysAgo.toISOString()),
+        supabase
+          .from('scans')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      ]);
+
+      if (weeklyRes.data) {
+        const total = weeklyRes.data.reduce(
+          (sum, row) => sum + (row.total_revenue_lost ?? 0),
+          0
+        );
+        setWeeklyRevenue(total);
+        setScanDates(weeklyRes.data.map(row => new Date(row.created_at)));
       }
-      setResponseText(text);
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message ?? 'Unknown error');
+
+      if (lastScanRes.data) {
+        setLastScan(lastScanRes.data as Scan);
+      } else {
+        setLastScan(null);
+      }
+    } catch (e) {
+      console.error('[Home] fetchData error:', e);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const handlePickImage = async () => {
-    try {
-      setError(null);
-      setResponseText(null);
+  useFocusEffect(
+    useCallback(() => {
+      fetchData();
+    }, [fetchData])
+  );
 
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission required', 'Photo library permission is needed to pick images.');
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: 'images',
-        base64: true,
-        quality: 0.8,
-      });
-
-      if (result.canceled || !result.assets || !result.assets[0].base64) {
-        return;
-      }
-
-      const asset = result.assets[0];
-
-      const manipulated = await ImageManipulator.manipulateAsync(
-        asset.uri,
-        [],
-        {
-          compress: 0.8,
-          format: ImageManipulator.SaveFormat.JPEG,
-          base64: true,
-        },
-      );
-
-      if (!manipulated.base64) {
-        throw new Error('Failed to convert image to JPEG base64');
-      }
-
-      const base64Image = manipulated.base64;
-      const mediaType = 'image/jpeg';
-
-      setLoading(true);
-      const text = await sendImageToClaude(base64Image, mediaType);
-      try {
-        const jsonStr = extractJson(text);
-        const parsed = JSON.parse(jsonStr);
-        if (isValidAnalysis(parsed)) {
-          router.push({ pathname: '/results', params: { analysis: JSON.stringify(parsed) } });
-          return;
-        }
-      } catch (e) {
-        console.log('[Dough] Parse failed:', typeof text, text.slice(0, 200), e);
-      }
-      setResponseText(text);
-    } catch (e: any) {
-      console.error(e);
-      setError(e.message ?? 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const last7Days = getLast7Days();
+  const today = new Date();
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Dough – Vision Spike</Text>
-      <Text style={styles.subtitle}>
-        Take a photo or pick one from your library. Claude will identify baked goods and estimate
-        quantities.
-      </Text>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <Text style={styles.greeting}>{getGreeting()}</Text>
 
-      <View style={styles.buttonRow}>
-        <View style={styles.button}>
-          <Button title="Take Photo" onPress={handleTakePhoto} />
-        </View>
-        <View style={styles.button}>
-          <Button title="Pick from Library" onPress={handlePickImage} />
-        </View>
+      {/* Hero card — weekly revenue lost */}
+      <View style={styles.heroCard}>
+        <Text style={styles.heroLabel}>Revenue lost this week</Text>
+        {loading ? (
+          <ActivityIndicator style={{ marginTop: 8 }} />
+        ) : (
+          <Text style={styles.heroValue}>{formatCurrency(weeklyRevenue)}</Text>
+        )}
       </View>
 
-      {loading && (
-        <View style={styles.status}>
-          <ActivityIndicator />
-          <Text style={styles.statusText}>Analyzing image with Claude...</Text>
-        </View>
-      )}
+      {/* 7-day calendar strip */}
+      <View style={styles.calendarStrip}>
+        {last7Days.map((day, i) => {
+          const hasScan = scanDates.some(sd => isSameDay(sd, day));
+          const isToday = isSameDay(day, today);
+          return (
+            <View key={i} style={styles.dayCell}>
+              <Text style={[styles.dayLabel, isToday && styles.dayLabelToday]}>
+                {DAY_LABELS[day.getDay()]}
+              </Text>
+              <View
+                style={[
+                  styles.dayDot,
+                  hasScan ? styles.dayDotFilled : styles.dayDotEmpty,
+                  isToday && styles.dayDotToday,
+                ]}
+              />
+            </View>
+          );
+        })}
+      </View>
 
-      {error && (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorTitle}>Error</Text>
-          <ScrollView>
-            <Text style={styles.errorText}>{error}</Text>
-          </ScrollView>
+      {/* Last scan card */}
+      {!loading && lastScan ? (
+        <TouchableOpacity
+          style={styles.lastScanCard}
+          onPress={() =>
+            router.push({
+              pathname: '/results',
+              params: { analysis: JSON.stringify({ items: lastScan.items, summary: { total_items: lastScan.total_items, total_revenue_lost: lastScan.total_revenue_lost, insight: lastScan.insight } }) },
+            })
+          }
+          activeOpacity={0.75}
+        >
+          <Text style={styles.lastScanLabel}>Last scan</Text>
+          <Text style={styles.lastScanDate}>{formatDate(lastScan.created_at)}</Text>
+          <View style={styles.lastScanRow}>
+            <Text style={styles.lastScanMeta}>{lastScan.total_items} items</Text>
+            <Text style={styles.lastScanRevenue}>
+              {formatCurrency(lastScan.total_revenue_lost)}
+            </Text>
+          </View>
+          {lastScan.insight ? (
+            <Text style={styles.lastScanInsight} numberOfLines={2}>
+              {lastScan.insight}
+            </Text>
+          ) : null}
+          <Text style={styles.lastScanCta}>View full breakdown →</Text>
+        </TouchableOpacity>
+      ) : !loading ? (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyText}>
+            No scans yet — tap the camera button at closing time.
+          </Text>
         </View>
-      )}
-
-      {responseText && (
-        <View style={styles.responseBox}>
-          <Text style={styles.responseTitle}>Claude response</Text>
-          <ScrollView>
-            <Text style={styles.responseText}>{responseText}</Text>
-          </ScrollView>
-        </View>
-      )}
-    </View>
+      ) : null}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    padding: 24,
-    paddingTop: 64,
     backgroundColor: '#fff',
   },
-  title: {
-    fontSize: 24,
+  content: {
+    padding: 24,
+    paddingTop: 64,
+    paddingBottom: 48,
+  },
+  greeting: {
+    fontSize: 28,
     fontWeight: '700',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: '#555',
     marginBottom: 24,
   },
-  buttonRow: {
+  heroCard: {
+    backgroundColor: '#111',
+    borderRadius: 16,
+    padding: 24,
+    marginBottom: 20,
+  },
+  heroLabel: {
+    fontSize: 13,
+    color: '#aaa',
+    marginBottom: 6,
+  },
+  heroValue: {
+    fontSize: 40,
+    fontWeight: '800',
+    color: '#fff',
+  },
+  calendarStrip: {
     flexDirection: 'row',
-    gap: 12,
+    justifyContent: 'space-between',
     marginBottom: 24,
+    paddingHorizontal: 4,
   },
-  button: {
-    flex: 1,
-  },
-  status: {
-    flexDirection: 'row',
+  dayCell: {
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 16,
+    gap: 6,
   },
-  statusText: {
-    fontSize: 14,
-    color: '#333',
+  dayLabel: {
+    fontSize: 12,
+    color: '#aaa',
   },
-  errorBox: {
-    maxHeight: 160,
-    borderRadius: 8,
+  dayLabelToday: {
+    color: '#111',
+    fontWeight: '600',
+  },
+  dayDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  dayDotFilled: {
+    backgroundColor: '#111',
+  },
+  dayDotEmpty: {
+    backgroundColor: '#e0e0e0',
+  },
+  dayDotToday: {
+    borderWidth: 2,
+    borderColor: '#111',
+  },
+  lastScanCard: {
     borderWidth: 1,
-    borderColor: '#f00',
-    padding: 12,
-    marginBottom: 16,
-    backgroundColor: '#ffe5e5',
-  },
-  errorTitle: {
-    fontWeight: '700',
-    marginBottom: 4,
-    color: '#b00000',
-  },
-  errorText: {
-    color: '#b00000',
-  },
-  responseBox: {
-    flex: 1,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    padding: 12,
+    borderColor: '#e5e5e5',
+    borderRadius: 12,
+    padding: 18,
     backgroundColor: '#fafafa',
   },
-  responseTitle: {
-    fontWeight: '700',
+  lastScanLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#888',
+    marginBottom: 4,
+  },
+  lastScanDate: {
+    fontSize: 14,
+    color: '#555',
+    marginBottom: 10,
+  },
+  lastScanRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 8,
   },
-  responseText: {
+  lastScanMeta: {
     fontSize: 14,
-    color: '#222',
+    color: '#666',
+  },
+  lastScanRevenue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#c00',
+  },
+  lastScanInsight: {
+    fontSize: 14,
+    color: '#444',
+    lineHeight: 20,
+    marginBottom: 12,
+  },
+  lastScanCta: {
+    fontSize: 13,
+    color: '#0066cc',
+  },
+  emptyCard: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e5e5e5',
+    padding: 24,
+    alignItems: 'center',
+  },
+  emptyText: {
+    fontSize: 15,
+    color: '#666',
+    textAlign: 'center',
+    lineHeight: 22,
   },
 });
